@@ -37,6 +37,7 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, "..", "..");
 const TASKS_DIR = join(REPO_ROOT, "bridge", "tasks");
 const SHOTS_DIR = process.env.EGO_BRIDGE_SHOTS || join(REPO_ROOT, "bridge", ".state", "shots");
+const INSTALLER = join(REPO_ROOT, "bridge", "install.mjs");
 
 const PORT = Number(process.env.PORT || 8080);
 const HOST = process.env.HOST || "0.0.0.0";
@@ -359,6 +360,39 @@ const server = createServer(async (req, res) => {
       return json(res, 200, jobView(job));
     }
 
+    if (path.startsWith("/install/") && req.method === "GET") {
+      // The path carries the bridge token, so only someone who already has the
+      // token can fetch an installer that embeds it.
+      const requested = path.slice("/install/".length).replace(/\.mjs$/, "");
+      if (!safeEqual(requested, BRIDGE_TOKEN)) return json(res, 404, { error: "not found" });
+      let source;
+      try {
+        source = await readFile(INSTALLER, "utf8");
+      } catch {
+        return json(res, 404, {
+          error: "installer not built on the relay; run bridge/scripts/build-installer.mjs",
+        });
+      }
+      const proto = req.headers["x-forwarded-proto"] || "http";
+      const host = req.headers["x-forwarded-host"] || req.headers.host || `localhost:${PORT}`;
+      const wsProto = String(proto).includes("https") ? "wss" : "ws";
+      // Patch both values so a stale build artifact can never point a laptop at
+      // the wrong relay or hand out a token this relay does not accept.
+      const patched = source
+        .replace(
+          /^const RELAY = .*;$/m,
+          `const RELAY = ${JSON.stringify(`${wsProto}://${host}/bridge`)};`,
+        )
+        .replace(/^const TOKEN = .*;$/m, `const TOKEN = ${JSON.stringify(BRIDGE_TOKEN)};`);
+      res.writeHead(200, {
+        "content-type": "application/javascript; charset=utf-8",
+        "content-disposition": 'attachment; filename="egolite-bridge-install.mjs"',
+        "cache-control": "no-store",
+      });
+      res.end(patched);
+      return;
+    }
+
     if (path.startsWith("/api/tasks/shots/") && req.method === "POST") {
       const name = path.slice("/api/tasks/shots/".length);
       const body = await readBody(req);
@@ -381,7 +415,7 @@ const server = createServer(async (req, res) => {
 
     if (path === "/") {
       res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-      res.end(statusPage(bridgeSummary()));
+      res.end(statusPage(bridgeSummary(), req));
       return;
     }
 
@@ -549,6 +583,12 @@ function encodeFrame(payload, opcode) {
   return Buffer.concat([header, payload]);
 }
 
+function installerUrl(req) {
+  const proto = req.headers["x-forwarded-proto"] || "http";
+  const host = req.headers["x-forwarded-host"] || req.headers.host || `localhost:${PORT}`;
+  return `${proto}://${host}/install/${BRIDGE_TOKEN}.mjs`;
+}
+
 // ---------------------------------------------------------------- housekeeping
 
 setInterval(() => {
@@ -567,7 +607,7 @@ setInterval(() => {
   }
 }, 25_000).unref?.();
 
-function statusPage(summary) {
+function statusPage(summary, req) {
   const rows = summary.connected
     ? summary.tasks
         .map((task) => `<li><code>${task.name}</code>${task.pinned ? " <em>pinned</em>" : ""}</li>`)
@@ -585,6 +625,12 @@ function statusPage(summary) {
 <p>Bridge: <span class="pill ${summary.connected ? "on" : "off"}">${summary.connected ? "connected" : "offline"}</span>
 ${summary.connected ? `— ${summary.host} · ${summary.platform}` : ""}</p>
 <h2>Tasks advertised by the laptop</h2><ul>${rows}</ul>
+<h2>Connect your laptop</h2>
+<p>Run this on your laptop (macOS or Windows), in a terminal:</p>
+<pre>curl -fsSL ${installerUrl(req)} -o egolite-bridge-install.mjs
+node egolite-bridge-install.mjs</pre>
+<p>The file embeds the bridge token and dials out to this relay — no port is opened on your laptop.
+Needs ego lite installed first: <a href="https://lite.ego.app/">lite.ego.app</a>.</p>
 <p>Agent API: <code>POST /api/run</code> with <code>{"task":"smoke-ego","params":{}}</code></p>`;
 }
 

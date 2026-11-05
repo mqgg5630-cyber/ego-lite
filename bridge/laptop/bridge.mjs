@@ -29,10 +29,18 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const REPO_ROOT = resolve(HERE, "..", "..");
-const TASKS_DIR = join(REPO_ROOT, "bridge", "tasks");
+// Same layout in the repo (bridge/laptop/bridge.mjs) and after install
+// (~/.ego-bridge/laptop/bridge.mjs): tasks sit one level up, next to "laptop".
+const TASKS_DIR = resolve(HERE, "..", "tasks");
 const EGO_BROWSER_BIN = process.env.EGO_BROWSER_BIN || "ego-browser";
-const KIT_PATH = join(HERE, "..", "tasks", "_kit.snippet.js");
+const KIT_PATH = join(TASKS_DIR, "_kit.snippet.js");
+
+if (typeof WebSocket === "undefined") {
+  console.error(
+    `the bridge needs Node.js 22 or newer for the global WebSocket (found ${process.version}).`,
+  );
+  process.exit(2);
+}
 
 const args = parseArgs(process.argv.slice(2));
 const relayUrl = args.relay || process.env.EGO_BRIDGE_RELAY;

@@ -20,74 +20,56 @@ Arena 沙箱 (agent)          relay (server.mjs)          你的笔记本 (bridg
 
 ## 一、15 分钟打通
 
-### 1) 云端：起 relay
+### 1) 云端：起 relay（已完成）
 
-在这个沙箱里（本仓库根目录）：
-
-```bash
-bridge/scripts/dev-relay.sh          # 打印并写入 bridge/.state/tokens.env
-```
-
-它会生成两个**不同**的令牌：`EGO_BRIDGE_TOKEN`（笔记本用）、`EGO_AGENT_TOKEN`（agent 用）。
-relay 起在 `0.0.0.0:8080`，沙箱预览地址形如 `https://8080-<sandboxId>.e2b.app`。浏览器打开它会看到状态页：`Bridge: offline`。
-
-### 2) 笔记本：装 ego lite 并起 bridge
+沙箱里已经跑着 relay：`0.0.0.0:8080`，令牌写在 `bridge/.state/tokens.env`（不提交）。
+预览地址：`https://8080-<sandboxId>.e2b.app` —— 打开它就是一个状态页，页面上直接给出给你笔记本用的那行命令。
 
 ```bash
-# 装 ego lite（已有可跳过）
-npx skills add citrolabs/ego-lite        # 或者直接下载 https://lite.ego.app/
-# 首次打开 app，完成 onboarding：导入 Chrome 数据 + 注册 ego-browser 到 PATH
-# 新开一个终端：
-ego-browser nodejs -e "console.log('ready')"
+bridge/scripts/dev-relay.sh          # 需要重启时用这个（会生成新令牌）
 ```
 
-把仓库拿到笔记本（`git clone` 你这份 fork，或只复制 `bridge/` 目录），然后：
+### 2) 笔记本：一行命令完成部署
+
+在**你自己的笔记本**（macOS / Windows）终端里执行状态页给出的命令，形如：
 
 ```bash
-cd ego-lite
-bridge/scripts/laptop-bridge.sh wss://8080-<sandboxId>.e2b.app/bridge <EGO_BRIDGE_TOKEN>
+curl -fsSL https://8080-<sandboxId>.e2b.app/install/<EGO_BRIDGE_TOKEN>.mjs -o egolite-bridge-install.mjs
+node egolite-bridge-install.mjs
 ```
 
-看到 `[bridge] connected ... advertises 8 tasks`，云端状态页变成 `Bridge: connected — <你的机器名>`，链路就通了。
+这个单文件安装器（约 25 KB，由 `bridge/scripts/build-installer.mjs` 生成）会：
 
-> 笔记本和 relay 在同一台机器上调试时：`bridge/scripts/laptop-bridge.sh ws://127.0.0.1:8080/bridge <token>`。
+1. 解包到 `~/.ego-bridge/`（`--dir` 可改）；
+2. 检查 Node ≥ 22、ego lite 是否装了、`ego-browser` 是否在 PATH（`--check` 只诊断不连接）；
+3. 调一次 `ego-browser nodejs -e "..."` 做真实自检；
+4. **主动出站**连到这个 relay，把 8 个任务登记上去。
+
+还没装 ego lite？先下载 <https://lite.ego.app/> 并完成 onboarding（会注册 `ego-browser`、可选导入 Chrome 数据），再跑上面的命令。安装器没找到时会直接把这些话说清楚，并给出 macOS/Windows 的直链。
+
+可选参数：
+
+```bash
+node egolite-bridge-install.mjs --check              # 只检查环境
+node egolite-bridge-install.mjs --dir ~/ego-bridge   # 换安装目录
+node egolite-bridge-install.mjs --fixture            # 顺便起 T5 用的本地演示后台 (:8787)
+node egolite-bridge-install.mjs --verbose            # 打印桥日志
+```
+
+装好之后，日常如果不想重装，也可以直接用仓库里的脚本手动起桥：
+
+```bash
+cd ego-lite && bridge/scripts/laptop-bridge.sh wss://8080-<sandboxId>.e2b.app/bridge <EGO_BRIDGE_TOKEN>
+```
+
+> 笔记本与 relay 在同一台机器调试时：`ws://127.0.0.1:8080/bridge`。
 
 ### 3) 云端：跑任务
 
 ```bash
 source bridge/.state/tokens.env
-node bridge/agent/run-all.mjs                          # 全阶梯（会跳过需要参数的层）
+node bridge/agent/run-all.mjs                          # 全阶梯（跳过需要参数的层）
 node bridge/agent/run-task.mjs --task smoke-ego        # 只跑单层
-```
-
----
-
-## 二、用哪些任务测"打通"（八层阶梯）
-
-打分标准：**每一层只证明一件事**，失败时能直接指认是哪一段断了。`run-all.mjs` 会打印记分板。
-
-| 层 | 任务 | 证明什么 | 需要什么 |
-|---|---|---|---|
-| **T0** | `smoke-ego` | 笔记本上的 `ego-browser` 能应答、Space 能建/复用、`p1` 能导航、snapshot 有结构 | 装好 ego lite |
-| **T1** | `t1-read-logged-in` | **驱动的是你自己的 profile**：能读到登录后才可见的页面（默认 GitHub 通知页） | onboarding 时导入过 Chrome 数据 |
-| **T2** | `t2-interact` | 指针/键盘/选择器层真的生效：填写 → 下拉 → 点击 → `waitForSelector` 拿到提交后的 DOM | 无（`data:` URL，离线） |
-| **T3** | `t3-search-summarize` | 外部站点可读、结果页结构可解析、能打开首条取正文（模型在云端做判断） | 能出网 |
-| **T4** | `t4-multitab` | 3 个 Page 并行；`tabs()`/`adopt()` 能**只读地**看到你自己的标签页而不抢走它 | 无 |
-| **T5** | `t5-checkout-flow` | **完整业务闭环**：登录态校验 → 筛选 → 翻页汇总 → 下载 CSV → 解析下载文件（金额对账） | 本地夹具 `bridge/fixtures/orders-server.mjs` |
-| **T6** | `t6-local-app` | **只有本地浏览器才有的能力**：Page 里的 `localhost` 就是你的电脑 —— 打开你本机跑着的 dev server / 后台 / Jupyter / Grafana，取结构 + 截图 | 你本机有个在跑的服务 |
-| **T7** | `t7-handoff` | 协作与安全：`handOff()` 把控制权交还给你，`takeOverTaskSpace()` 再拿回来 | 你愿意在 ego lite 里点两下 |
-
-T5 的夹具要先在**笔记本**上起（它代表"你公司那套内网后台"）：
-
-```bash
-node bridge/fixtures/orders-server.mjs        # http://127.0.0.1:8787
-```
-
-然后云端：
-
-```bash
-node bridge/agent/run-all.mjs --local http://localhost:3000 \
-  --fixture http://localhost:8787 --url https://github.com/notifications
 ```
 
 ### 建议的实跑顺序
@@ -154,7 +136,7 @@ await task.finish({ keep: [] });
 node bridge/test/e2e.mjs
 ```
 
-用一个**假的** ego-browser 跑通 relay + bridge 全链路（32 项检查）：鉴权、错误令牌被拒、任务目录、任务名穿越、非零退出码透传、异步 job、截图上传与回取、伪造截图令牌、以及每个任务文件的语法与文档头。真实浏览器相关的部分需要你的笔记本参与，这就是上面那套阶梯的意义。
+用一个**假的** ego-browser 跑通 relay + bridge 全链路（35 项检查）：鉴权、错误令牌被拒、任务目录、任务名穿越、非零退出码透传、异步 job、截图上传与回取、伪造截图令牌、安装器下载与 relay 回写，以及每个任务文件的语法与文档头。真实浏览器相关的部分需要你的笔记本参与，这就是上面那套阶梯的意义。
 
 ---
 
@@ -171,5 +153,8 @@ bridge/
   fixtures/orders-server.mjs  T5 的本地业务夹具
   scripts/dev-relay.sh        起 relay（生成令牌）
   scripts/laptop-bridge.sh    笔记本一键起桥（先检查 ego-browser）
+  scripts/build-installer.mjs 把笔记本那端打成一个单文件安装器
+  install.template.mjs        安装器模板（构建时注入 relay/令牌/文件）
+  install.mjs                 构建产物：`node install.mjs` 即完成笔记本部署
   test/e2e.mjs                假浏览器全链路测试
 ```
