@@ -236,6 +236,7 @@ function onBridgeFrame(frame, socket) {
       bridge = {
         ws: socket,
         since: Date.now(),
+        lastPong: Date.now(),
         info: {
           host: String(frame.host || "unknown-laptop"),
           platform: String(frame.platform || ""),
@@ -248,7 +249,11 @@ function onBridgeFrame(frame, socket) {
       return;
     }
     case "ping":
+      if (bridge?.ws === socket) bridge.lastPong = Date.now();
       socket.send(JSON.stringify({ type: "pong", at: Date.now() }));
+      return;
+    case "pong":
+      if (bridge?.ws === socket) bridge.lastPong = Date.now();
       return;
     case "job.result": {
       const job = jobs.get(frame.jobId);
@@ -463,6 +468,12 @@ server.on("upgrade", (req, socket) => {
   const ws = makeSocket(socket);
   socket.on("data", (chunk) => ws.feed(chunk));
   socket.on("close", () => {
+    if (bridge?.ws === ws) {
+      console.log(`[relay] bridge ${bridge.info.host} disconnected`);
+      bridge = null;
+    }
+  });
+  socket.on("end", () => {
     if (bridge?.ws === ws) bridge = null;
   });
   socket.on("error", () => {
@@ -598,14 +609,28 @@ setInterval(() => {
   }
 }, 60_000).unref?.();
 
+// A laptop that loses Wi-Fi leaves a half-open socket that TCP will not report
+// for minutes. Ping, and drop the bridge when it stops answering, so the agent
+// is told "offline" instead of queueing jobs into a dead tunnel.
+const BRIDGE_SILENCE_MS = 70_000;
 setInterval(() => {
   if (!bridge) return;
+  if (Date.now() - (bridge.lastPong || bridge.since) > BRIDGE_SILENCE_MS) {
+    console.warn(`[relay] bridge ${bridge.info.host} stopped answering; dropping it`);
+    try {
+      bridge.ws.close(4008, "heartbeat timeout");
+    } catch {
+      /* already gone */
+    }
+    bridge = null;
+    return;
+  }
   try {
     bridge.ws.send(JSON.stringify({ type: "ping", at: Date.now() }));
   } catch {
     bridge = null;
   }
-}, 25_000).unref?.();
+}, 20_000).unref?.();
 
 function statusPage(summary, req) {
   const rows = summary.connected
